@@ -1,7 +1,7 @@
 # HCP + MTR: Hierarchical Combinatorial Pruning for Multimodal Motion Transformers
 
 This repository contains the official implementation of **Hierarchical Combinatorial Pruning (HCP)** integrated with a **Multimodal Motion Transformer (MTR)** backbone for real-time trajectory prediction in autonomous driving environments.
- 
+  
 ```
 Dense candidates (N_agents × K_modes × T_steps) 
                      ↓
