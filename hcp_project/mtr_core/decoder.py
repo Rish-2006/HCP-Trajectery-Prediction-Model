@@ -121,11 +121,19 @@ class MTRDecoder(nn.Module):
         if hcp_mask is not None:
             pruned_indices = (~hcp_mask).nonzero(as_tuple=False)  # (num_pruned, 3)
             if pruned_indices.numel() > 0:
+                # Use the active dtype's own minimum representable value instead of a
+                # hardcoded -1e9 — under mixed-precision training conf_logits is cast
+                # to float16 (max magnitude ~65504), and -1e9 overflows that, crashing
+                # with "value cannot be converted to type at::Half without overflow".
+                # finfo(dtype).min is always safe for whatever precision is active
+                # (fp16, bf16, or fp32) and is still easily negative enough to drive
+                # that mode's softmax probability to ~0.
+                fill_value = torch.finfo(conf_logits.dtype).min
                 conf_logits[
                     pruned_indices[:, 0],
                     pruned_indices[:, 1],
                     pruned_indices[:, 2],
-                ] = -1e9
+                ] = fill_value
 
         confidences = F.softmax(conf_logits, dim=-1)  # (B, N, n_modes)
         return traj_out, confidences

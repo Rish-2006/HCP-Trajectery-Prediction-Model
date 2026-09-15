@@ -4,11 +4,13 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 try:
-    from data.nuscenes_parser import NuScenesParser, NuScenesMapWrapper
+    from data.nuscenes_parser import NuScenesParser, NuScenesMapWrapper, load_camera_image
     from data.womd_parser import WOMDParser
+    from mtr_core.image_encoder import preprocess_image
 except ModuleNotFoundError:
-    from hcp_project.data.nuscenes_parser import NuScenesParser, NuScenesMapWrapper
+    from hcp_project.data.nuscenes_parser import NuScenesParser, NuScenesMapWrapper, load_camera_image
     from hcp_project.data.womd_parser import WOMDParser
+    from hcp_project.mtr_core.image_encoder import preprocess_image
 
 
 
@@ -120,10 +122,18 @@ class UnifiedBatch:
     agent_types  : list[str]
     sdc_route_graph : networkx.DiGraph
     scenario_id  : str
+    camera_image : torch.Tensor (3, 224, 224) — preprocessed CAM_FRONT
+                   keyframe closest to the prediction pivot. Zeros if no
+                   real image was available for this scenario (blob part
+                   not downloaded, sensor_files missing, etc.) — check
+                   has_image before trusting it as real data.
+    has_image    : bool — whether camera_image is real data (True) or a
+                   zero placeholder (False).
     """
 
     def __init__(self, history_traj, future_traj, map_polylines,
-                 agent_types, sdc_route_graph, scenario_id, mmap_dir=None):
+                 agent_types, sdc_route_graph, scenario_id, mmap_dir=None,
+                 camera_image=None, has_image=False):
 
         if mmap_dir is not None and history_traj.size > 0:
             # Persist large arrays as memory-mapped files
@@ -153,6 +163,8 @@ class UnifiedBatch:
         self.agent_types      = agent_types
         self.sdc_route_graph  = sdc_route_graph
         self.scenario_id      = scenario_id
+        self.camera_image     = camera_image if camera_image is not None else torch.zeros(3, 224, 224)
+        self.has_image        = has_image
 
 
 # ---------------------------------------------------------------------------
@@ -171,16 +183,19 @@ class DatasetRouter(Dataset):
                        Pass None (default) to keep arrays in RAM.
     """
 
-    def __init__(self, nuscenes_dir, waymo_dir, mode="nuscenes", mmap_dir=None):
+    def __init__(self, nuscenes_dir, waymo_dir, mode="nuscenes", mmap_dir=None, scene_filter=None):
         self.mode        = mode.lower()
         self.mmap_dir    = mmap_dir
+        self.nuscenes_dir = nuscenes_dir
 
-        self.nuscenes_parser = NuScenesParser(nuscenes_dir)
+        self.nuscenes_parser = NuScenesParser(nuscenes_dir, scene_filter=scene_filter)
         self.womd_parser     = WOMDParser(waymo_dir)
         self.map_wrapper     = NuScenesMapWrapper(nuscenes_dir)
 
         self.nuscenes_data = self.nuscenes_parser.process_dataset()
+        print(f"DatasetRouter: {len(self.nuscenes_data)} nuScenes trajectory slices ready.")
         self.waymo_ids     = self.womd_parser.get_all_scenario_ids()
+        print("DatasetRouter: initialization complete.")
 
     # ------------------------------------------------------------------
     def __len__(self):
@@ -253,6 +268,22 @@ class DatasetRouter(Dataset):
         fut_list.append(other_fut)
         agent_types.append("vehicle")
 
+        # --- Camera image: CAM_FRONT from the pivot (most-recent-history) frame ---
+        # item["history"][-1] is the pivot frame (t=0, the "now" the future is
+        # predicted from) — that's the natural frame to pull the camera view from.
+        camera_image, has_image = None, False
+        sensor_files = item["history"][-1].get("sensor_files", {})
+        cam_front_path = sensor_files.get("CAM_FRONT")
+        if cam_front_path:
+            try:
+                pil_img = load_camera_image(self.nuscenes_dir, cam_front_path)
+                if pil_img is not None:
+                    camera_image = preprocess_image(pil_img)
+                    has_image = True
+            except Exception as e:
+                print(f"Warning: failed to load/preprocess CAM_FRONT image "
+                      f"({cam_front_path}): {e} — using zero placeholder for this scenario.")
+
         # --- Map: vectorized batch transform ---
         map_data  = self.map_wrapper.get_map_elements(ego_x, ego_y)
         raw_lanes = [
@@ -286,6 +317,8 @@ class DatasetRouter(Dataset):
             sdc_route_graph=sdc_route_graph,
             scenario_id=scenario_id,
             mmap_dir=self.mmap_dir,
+            camera_image=camera_image,
+            has_image=has_image,
         ), scenario_id
 
     # ------------------------------------------------------------------

@@ -1,101 +1,188 @@
-# HCP + MTR: Hierarchical Combinatorial Pruning for Multimodal Motion Transformers
+# HCP + MTR: Hierarchical Pruning for Efficient Trajectory Prediction
 
-This repository contains the official implementation of **Hierarchical Combinatorial Pruning (HCP)** integrated with a **Multimodal Motion Transformer (MTR)** backbone for real-time trajectory prediction in autonomous driving environments.
-  
-```
-Dense candidates (N_agents × K_modes × T_steps) 
-                     ↓
-      Stage 1: KFF (Kinematic constraints)
-                     ↓
-      Stage 2: SRF (Spatial boundaries)
-                     ↓
-      Stage 3: SCF (Social interactions GNN)
-                     ↓
-               Sparse Set
-                     ↓
-      MTR Decoder (GMM Forecasting)
-```
+An autonomous-driving trajectory prediction system that combines a Motion Transformer (MTR) core with a Hierarchical Combinatorial Pruning (HCP) module. The project's central research question: **does staged, cheap candidate pruning reduce inference cost without meaningfully hurting trajectory prediction accuracy?**
+
+Trained and evaluated on the real [nuScenes](https://www.nuscenes.org/) dataset (trainval split).
 
 ---
 
-## 🌐 Public Live Interactive Web Demo
+## Table of Contents
 
-Click the link below to open and test the interactive Control Room Dashboard directly in your web browser without downloading any files:
-
-👉 **[https://Rish-2006.github.io/HCP-Trajectery-Prediction-Model/](https://Rish-2006.github.io/HCP-Trajectery-Prediction-Model/)**
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Setup](#setup)
+- [Data Preparation](#data-preparation)
+- [Training](#training)
+- [Evaluation](#evaluation)
+- [Current Results](#current-results)
+- [Known Limitations](#known-limitations)
+- [Project Structure](#project-structure)
 
 ---
 
-## 🚀 Local Execution
+## Overview
 
-Run the application locally to access the backend API and local control room interface:
+Trajectory prediction models typically score a fixed set of candidate future paths for each agent. HCP aims to reduce computational cost by cutting that candidate set down using staged filters for kinematic feasibility, spatial/map reachability, and social compatibility. This project implements the pruning module and transformer core to measure the accuracy/cost trade-off. The current implementation does not yet skip decoder computation for pruned candidates, as explained under Known Limitations.
+
+**Inputs the model conditions on:**
+
+- Agent trajectory history (position, velocity, heading)
+- Real HD map geometry (lane centerlines, crosswalks, drivable area) via `nuscenes-devkit`
+- Real CAM_FRONT camera imagery (via a frozen, ImageNet-pretrained ResNet18 branch)
+
+---
+
+## Architecture
+
+**Stage 1: HCP Pruner** (`hcp_project/hcp/`)
+
+| Filter | Purpose | Uses |
+|---|---|---|
+| KFF (Kinematic Feasibility Filter) | Rejects candidates violating curvature/jerk/acceleration limits | Candidate geometry only |
+| SRF (Spatial Reachability Filter) | Rejects candidates leaving the road / colliding with lane boundaries | Candidates + map |
+| SCF (Social Compatibility Filter) | Learned (GraphSAGE GNN) agent-interaction filter | Candidates + agent history |
+
+Candidates fed into the pruner are generated purely from each agent's own recent history (constant-velocity + a bank of turn-rate variations). **No ground truth is used**, matching what would be available at real inference time.
+
+**Stage 2: MTR Core** (`hcp_project/mtr_core/`)
+
+- PointNet-style tokenizer (agent history + map polylines)
+- Transformer encoder with Rotary Position Embeddings (RoPE)
+- Cross-attention fusion (agent ↔ map, RBF-distance-biased)
+- CAM_FRONT image branch (frozen ResNet18 → 256-d embedding, broadcast-fused into every agent token)
+- GMM decoder: 6 intention-anchor modes, winner-takes-all regression + classification loss
+
+---
+
+## Setup
 
 ```bash
-# 1. Unpack datasets and generate mock splits
-python hcp_project/data/extractor.py --test
+git clone https://github.com/KarthigayanR-2005/HCP-Trajectery-Prediction-Model.git
+cd HCP-Trajectery-Prediction-Model
 
-# 2. Run benchmarking evaluation (minADE/FDE/MR and latency metrics)
-python hcp_project/eval/evaluate.py
+python -m venv hcp_env
+hcp_env\Scripts\activate          # Windows
+# source hcp_env/bin/activate     # Linux/Mac
 
-# 3. Launch live telemetry control room dashboard
-python hcp_project/backend/main.py
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install -r hcp_project/requirements.txt
+pip install ijson nuscenes-devkit
 ```
 
-After launching the backend, open **[http://localhost:8000](http://localhost:8000)** in your browser.
+Requires an NVIDIA GPU with CUDA support (developed and tested on an RTX 3050, 6GB VRAM).
 
 ---
 
-## Directory Structure
+## Data Preparation
 
-```
-.
-├── index.html             # Standalone live interactive web dashboard for GitHub Pages
-├── hcp_project/
-│   ├── data/              # Data parsing and Unified Dataset Router
-│   ├── hcp/               # Hierarchical Combinatorial Pruning (KFF, SRF, SCF)
-│   ├── mtr_core/          # MTR tokenizers, encoder, decoder, and training
-│   ├── fusion/            # Geometry-conditioned cross-attention layer
-│   ├── outputs/           # Modality results: route graphs, maps, motion states
-│   ├── eval/              # Benchmarking and metrics evaluation
-│   ├── paper/             # Main LaTeX draft template filled with metrics
-│   ├── backend/           # FastAPI telemetries and stream endpoints
-│   ├── ui/                # Vite + React frontend dashboard codebase
-│   └── Dockerfile         # Container deployment configuration
-└── README.md
-```
-
----
-
-## Core Algorithmic Components
-
-### 1. HCP Pruner (`hcp_project/hcp/`)
-- **Stage 1: Kinematic Feasibility Filter (KFF):** Prunes trajectories violating maximum curvature ($\kappa_{max}=0.2$ rad/m), jerk ($j_{max}=5.0$ m/s³), and lateral acceleration ($a_{lat\_max}=4.0$ m/s²).
-- **Stage 2: Spatial Reachability Filter (SRF):** Employs a SciPy KD-Tree index over static lane boundaries to detect off-road collisions.
-- **Stage 3: Social Compatibility Filter (SCF):** A 3-layer GraphSAGE GNN representing agent-to-agent conflicts.
-
-### 2. MTR Core (`hcp_project/mtr_core/`)
-- **Tokenizers:** Polyline PointNet and agent trajectory MLPs.
-- **Encoder:** Transformer encoder utilizing Rotary Position Embeddings (RoPE).
-- **Fusion Layer:** Fuses map and agent representations using a physical distance-conditioned RBF kernel attention bias.
-
----
-
-## Telemetry Outputs & Live Dashboard
-
-The control room dashboard provides three output modalities:
-1. **Modality 1 (TNT Route Graph):** Directed NetworkX waypoints and auto-playing synthesized text-to-speech navigation cues.
-2. **Modality 2 (BEV Map Crop):** Geographic & ego-centric rendering displaying lanes, crosswalks, agent bounding boxes, and predicted trajectories.
-3. **Modality 3 (Motion State NLG):** Natural Language explanations for vehicle risks and vector field velocity plots.
-
----
-
-## Docker Execution
-
-To build and run using Docker:
+1. Register at the [nuScenes download page](https://www.nuscenes.org/download).
+2. Download, from the **Trainval** section:
+   - `v1.0-trainval_meta.tgz` (metadata, required)
+   - `nuScenes-map-expansion-v1.3.zip` (real map geometry, required)
+   - At least one `File blobs of 85 scenes` part (camera/LiDAR, used for the image branch; more parts provide more scenes with real images)
+3. Place the downloaded files in the repo root, then extract:
 
 ```bash
-cd hcp_project
-docker build -t hcp-trajectory-dashboard .
-docker run -p 8000:8000 hcp-trajectory-dashboard
+python hcp_project/data/extractor.py --extract
 ```
-Open **[http://localhost:8000](http://localhost:8000)** in your browser.
+
+The extractor auto-detects whichever files are present, streams large tables with `ijson` to keep memory bounded, and reports which blob parts (if any) are missing.
+
+---
+
+## Training
+
+```bash
+python -m hcp_project.mtr_core.train \
+    --epochs 40 \
+    --batch_size 2 \
+    --max_steps_per_epoch 5000 \
+    --save_every_steps 1000
+```
+
+**Resuming** (recommended for any run beyond the first; checkpoints save every `save_every_steps`, independent of chunk size):
+
+```bash
+python -m hcp_project.mtr_core.train \
+    --resume_model hcp_project/outputs/mtr_checkpoint.pth \
+    --epochs 40 --batch_size 2 --max_steps_per_epoch 5000 --save_every_steps 1000
+```
+
+**Key flags:**
+
+| Flag | Purpose |
+|---|---|
+| `--max_steps_per_epoch` | Caps each "epoch" to N steps; useful since one true full pass over the dataset is ~195k steps |
+| `--save_every_steps` | Checkpoint frequency, independent of chunk size |
+| `--lr_patience` / `--lr_factor` | `ReduceLROnPlateau` scheduler settings (halves LR after N stagnant chunks by default) |
+| `--override_lr` | Explicitly reset LR (and scheduler history) on resume; useful after a fix that changes model behavior |
+| `--profile_steps N` | Print a data-loading-time vs. compute-time breakdown for the first N steps |
+
+---
+
+## Evaluation
+
+```bash
+# Real minADE / minFDE / Miss Rate, comparing HCP-on vs. HCP-off
+python hcp_project/eval/evaluate.py \
+    --checkpoint hcp_project/outputs/mtr_checkpoint.pth \
+    --compare_hcp --num_samples 2000
+
+# Restrict to the official nuScenes val split (150 scenes)
+python hcp_project/eval/evaluate.py \
+    --checkpoint hcp_project/outputs/mtr_checkpoint.pth \
+    --compare_hcp --num_samples 2000 --val_split_only
+
+# Diagnostic: separates regression loss from classification loss,
+# and checks predicted-vs-ground-truth coordinate scale
+python hcp_project/eval/diagnose_loss.py \
+    --checkpoint hcp_project/outputs/mtr_checkpoint.pth \
+    --use_hcp --num_batches 100
+```
+
+`evaluate.py` runs genuine model inference on real data and writes results to `hcp_project/outputs/eval_real_<timestamp>.json`, including an explicit note on data-split caveats for every run.
+
+---
+
+## Current Results
+
+Reported full-dataset evaluation results after ~1.2M training steps (~6 full passes over the available trajectory data):
+
+| Metric | Value |
+|---|---|
+| minADE | ~24.6 m |
+| minFDE | ~24.3 m |
+| Miss Rate (2m) | ~98.5% |
+| Inference latency (HCP on / off) | ~9-16 ms / ~8-9 ms per agent |
+
+On the official 150-scene val split (soft check; see limitations below): minADE 25.82m, minFDE 25.17m, Miss Rate 98.9%, closely matching the full-dataset numbers.
+
+---
+
+## Known Limitations
+
+- **No true held-out validation split.** The current model trained on the full 850-scene dataset before any val/train separation was introduced. The val-split numbers above are an approximate check on previously seen data, not a rigorous generalization measure. Held-out validation requires training a fresh model on only the official 700 train scenes and evaluating on the 150 validation scenes.
+- **HCP pruning does not yet reduce real inference latency.** The pruning mask uses only history/map, but the current decoder always computes all 6 candidate modes regardless of the mask. Pruning affects which mode is trusted, not how much is computed. Making pruning skip real computation requires a decoder architecture change, not yet implemented.
+- **Only partial image coverage.** Only 1 of 10 nuScenes camera/LiDAR blob parts has been downloaded; the majority of training examples fall back to a zero-image placeholder rather than a real photo.
+- **Miss Rate remains high (~98%)** at a 2m threshold. The model is not yet at production-grade accuracy.
+
+---
+
+## Project Structure
+
+```text
+hcp_project/
+├── data/            # Dataset extraction, parsing, streaming (nuScenes + WOMD)
+├── mtr_core/        # Transformer model: tokenizer, encoder, decoder, training loop, image encoder
+├── hcp/             # Pruning filters: KFF, SRF, SCF
+├── fusion/          # Cross-attention fusion layer
+├── eval/            # Real evaluation and diagnostic scripts
+├── utils/           # Mixed-precision training utilities
+└── outputs/         # Checkpoints, logs, evaluation results (generated, not tracked)
+```
+
+---
+
+## Acknowledgements
+
+Built on the [nuScenes](https://www.nuscenes.org/) dataset (Caesar et al.) and uses [nuscenes-devkit](https://github.com/nutonomy/nuscenes-devkit) for map and split utilities.

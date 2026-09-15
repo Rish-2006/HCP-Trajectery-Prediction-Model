@@ -1,0 +1,24 @@
+{
+  "Ours (HCP+MTR)": {
+    "minADE": 25.818597441077234,
+    "minFDE": 25.171596374571322,
+    "miss_rate_2m": 0.989,
+    "num_agents_evaluated": 2000,
+    "avg_latency_ms_per_agent": 16.29212260246277,
+    "hcp_pruning_used": true,
+    "checkpoint": "hcp_project\\outputs\\mtr_checkpoint.pth",
+    "scene_filter_used": "official nuScenes val split",
+    "NOTE": "Evaluated ONLY on the official nuScenes val split (150 scenes). HONEST CAVEAT: if this checkpoint was trained on the full dataset, these scenes were already seen during training \u2014 this is a soft/approximate check, not a true held-out generalization test."
+  },
+  "No-HCP (MTR baseline)": {
+    "minADE": 25.818597441077234,
+    "minFDE": 25.171596374571322,
+    "miss_rate_2m": 0.989,
+    "num_agents_evaluated": 2000,
+    "avg_latency_ms_per_agent": 8.591415762901306,
+    "hcp_pruning_used": false,
+    "checkpoint": "hcp_project\\outputs\\mtr_checkpoint.pth",
+    "scene_filter_used": "official nuScenes val split",
+    "NOTE": "Evaluated ONLY on the official nuScenes val split (150 scenes). HONEST CAVEAT: if this checkpoint was trained on the full dataset, these scenes were already seen during training \u2014 this is a soft/approximate check, not a true held-out generalization test."
+  }
+}

@@ -117,6 +117,8 @@ class LargeScaleDrivingStreamer(IterableDataset):
                 "sdc_edges":   sdc_edges,           # list of (u, v, attr)
                 "scenario_id": batch.scenario_id,
                 "num_agents":  hist.shape[0],
+                "camera_image": batch.camera_image, # (3, 224, 224) tensor
+                "has_image":    batch.has_image,    # bool
             }
 
         except Exception as exc:  # noqa: BLE001
@@ -129,6 +131,8 @@ class LargeScaleDrivingStreamer(IterableDataset):
                 "sdc_edges":   [],
                 "scenario_id": f"error_idx_{idx}",
                 "num_agents":  1,
+                "camera_image": torch.zeros(3, 224, 224),
+                "has_image":    False,
             }
 
 
@@ -167,6 +171,8 @@ def dynamic_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     batch_splits : List[int]          = []
     map_splits   : List[int]          = []
     scenario_ids : List[str]          = []
+    camera_images: List[torch.Tensor] = []
+    has_images   : List[bool]         = []
 
     for item in batch:
         hist = item["history"]   # (N_i, T_hist, 6)
@@ -189,6 +195,9 @@ def dynamic_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         all_types.extend(item["agent_types"])
         scenario_ids.append(item["scenario_id"])
 
+        camera_images.append(item.get("camera_image", torch.zeros(3, 224, 224)))
+        has_images.append(item.get("has_image", False))
+
     return {
         "history_traj": torch.cat(histories, dim=0),   # (sum_N, T_hist, 6)
         "future_traj":  torch.cat(futures,   dim=0),   # (sum_N, T_fut,  5)
@@ -197,6 +206,8 @@ def dynamic_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "batch_splits": batch_splits,
         "map_splits":   map_splits,
         "scenario_ids": scenario_ids,
+        "camera_images": torch.stack(camera_images, dim=0),  # (B, 3, 224, 224)
+        "has_image":     torch.tensor(has_images, dtype=torch.bool),  # (B,)
     }
 
 

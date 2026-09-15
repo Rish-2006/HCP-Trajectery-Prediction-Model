@@ -1,0 +1,22 @@
+{
+  "Ours (HCP+MTR)": {
+    "minADE": 30.96430991667509,
+    "minFDE": 33.7486553484872,
+    "miss_rate_2m": 0.989,
+    "num_agents_evaluated": 2000,
+    "avg_latency_ms_per_agent": 9.735569953918457,
+    "hcp_pruning_used": true,
+    "checkpoint": "hcp_project\\outputs\\mtr_checkpoint.pth",
+    "NOTE": "Evaluated on the same data distribution used for training \u2014 no held-out validation split exists yet, so these numbers are an optimistic proxy, not a true generalization measure."
+  },
+  "No-HCP (MTR baseline)": {
+    "minADE": 30.96430991667509,
+    "minFDE": 33.7486553484872,
+    "miss_rate_2m": 0.989,
+    "num_agents_evaluated": 2000,
+    "avg_latency_ms_per_agent": 8.343458652496338,
+    "hcp_pruning_used": false,
+    "checkpoint": "hcp_project\\outputs\\mtr_checkpoint.pth",
+    "NOTE": "Evaluated on the same data distribution used for training \u2014 no held-out validation split exists yet, so these numbers are an optimistic proxy, not a true generalization measure."
+  }
+}

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import math
 import time
 try:
     from hcp.kff import KinematicFeasibilityFilter
@@ -9,6 +10,59 @@ except ModuleNotFoundError:
     from hcp_project.hcp.kff import KinematicFeasibilityFilter
     from hcp_project.hcp.srf import SpatialReachabilityFilter
     from hcp_project.hcp.scf import SocialCompatibilityFilter
+
+
+def generate_kinematic_candidates(hist, T_fut=12, dt=0.5, K=6):
+    """
+    Generates K candidate future trajectories using ONLY the agent's own
+    recent history (position, velocity, heading) — no ground truth involved
+    anywhere, so this is exactly what a real deployed system could compute
+    at inference time, before the true future is known.
+
+    Each candidate extrapolates forward at constant speed under a different
+    constant turn rate, covering straight-ahead, gentle/moderate left and
+    right turns — a standard "anchor trajectory" bank, not a search over an
+    enormous space, so it stays cheap.
+
+    Args:
+        hist: (T_hist, 6) tensor — [x, y, vx, vy, heading, _] per past step.
+              Only the most recent step is used as the extrapolation origin.
+        T_fut: number of future steps to generate.
+        dt: seconds per step (nuScenes keyframes are 2Hz -> 0.5s).
+        K: number of candidates to generate.
+    Returns:
+        (K, T_fut, 5) tensor, channel layout matching ground truth:
+        [x, y, vx, vy, heading].
+    """
+    last = hist[-1]
+    x0, y0 = last[0].item(), last[1].item()
+    vx0, vy0 = last[2].item(), last[3].item()
+    heading0 = last[4].item()
+    speed = math.hypot(vx0, vy0)
+
+    # Turn rates in rad/s: straight, gentle left/right, moderate left/right,
+    # sharper turn — a spread that's plausible for a single 0.5s-sampled step
+    # without being physically absurd.
+    turn_rate_bank = [0.0, 0.12, -0.12, 0.25, -0.25, 0.40]
+    turn_rates = turn_rate_bank[:K]
+    while len(turn_rates) < K:  # if K > len(bank), repeat the straight option
+        turn_rates.append(0.0)
+
+    candidates = torch.zeros(K, T_fut, 5, dtype=hist.dtype, device=hist.device)
+    for k, omega in enumerate(turn_rates):
+        x, y, heading = x0, y0, heading0
+        for t in range(T_fut):
+            heading = heading + omega * dt
+            x = x + speed * dt * math.cos(heading)
+            y = y + speed * dt * math.sin(heading)
+            vx = speed * math.cos(heading)
+            vy = speed * math.sin(heading)
+            candidates[k, t, 0] = x
+            candidates[k, t, 1] = y
+            candidates[k, t, 2] = vx
+            candidates[k, t, 3] = vy
+            candidates[k, t, 4] = heading
+    return candidates
 
 
 class HierarchicalCombinatorialPruner(nn.Module):
@@ -93,13 +147,7 @@ class HierarchicalCombinatorialPruner(nn.Module):
         scf_survived = int(composite_mask.sum())
         
         pruning_ratio = 1.0 - (scf_survived / total_candidates)
-        
-        # Target: Latency reduction of >= 60%
-        # Standard model run without HCP takes around 120ms. Run with HCP takes:
-        # t_hcp + t_sparse_transformer. Since size is pruned from 128 to ~10 (90%+ reduction),
-        # Transformer time reduces by 80%.
-        latency_reduction_estimate = 65.0 # Estimated 65% reduction in latency
-        
+
         stats = {
             "total_time_ms": total_time * 1000.0,
             "kff_time_ms": kff_time * 1000.0,
@@ -110,8 +158,15 @@ class HierarchicalCombinatorialPruner(nn.Module):
             "srf_count": srf_survived,
             "scf_count": scf_survived,
             "pruning_ratio": pruning_ratio,
-            "latency_reduction_pct": latency_reduction_estimate,
-            "accuracy_retention_pct": 98.2 # Target >=95% accuracy retained
+            # NOTE: this pruner stage's own wall-clock cost is measured above
+            # (total_time_ms). What it does NOT measure is whether pruning
+            # actually reduces the downstream transformer's compute — in the
+            # current architecture the decoder always processes all K modes
+            # regardless of this mask, so there is currently no real latency
+            # reduction to report here. Earlier versions of this dict reported
+            # hardcoded placeholder values for "latency_reduction_pct" and
+            # "accuracy_retention_pct" that were never actually measured —
+            # removed rather than continuing to report fabricated numbers.
         }
         
         return sparse_trajectories, composite_mask, stats

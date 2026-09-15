@@ -1,5 +1,6 @@
 nuscenes-devkit
 shapely
+ijson
 pyproj
 geopandas
 gtts
